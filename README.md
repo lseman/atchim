@@ -45,7 +45,7 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
    ```bash
    cd atchim
-   g++ atchim_client.cpp -o atchim_client
+   g++ atchim.cpp -o atchim
    g++ atchim_server.cpp -o atchim_server -lsqlite3 -lpthread
    ```
 
@@ -61,7 +61,7 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
    _atchim_preexec() {
       local command="$1"
-      /path/to/atchim_client "start" "$command"
+      /path/to/atchim "start" "$command"
    }
 
    if [ "$SHELL" = "/bin/zsh" ]; then
