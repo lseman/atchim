@@ -33,17 +33,17 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
 3. Add the _atchim_preexec and _atchim_precmd functions to your shell configuration file (e.g., ~/.zshrc for Zsh):
 
-```bash
-autoload -U add-zsh-hook
+   ```bash
+   autoload -U add-zsh-hook
 
-_atchim_preexec() {
-    local command="$1"
-    /path/to/atchim "start" "$command"
-}
+   _atchim_preexec() {
+      local command="$1"
+      /path/to/atchim "start" "$command"
+   }
 
 
-add-zsh-hook preexec _atchim_preexec
-```
+   add-zsh-hook preexec _atchim_preexec
+   ```
 
 4. Reload your shell configuration or open a new terminal window for the changes to take effect.
 
