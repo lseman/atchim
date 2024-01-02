@@ -41,7 +41,6 @@ Before using Atchim, you'll need to have the following prerequisites installed o
       /path/to/atchim "start" "$command"
    }
 
-
    add-zsh-hook preexec _atchim_preexec
    ```
 
