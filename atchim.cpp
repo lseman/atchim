@@ -1,105 +1,61 @@
-#include <iostream>
-#include <sqlite3.h>
+/**
+ * @file: atchim.cpp
+ * @author: Laio Oriel Seman
+ * @contact: laio [at] gos.ufsc.br
+ *
+ * Description: Client component of the Atchim command logging tool. This client sends
+ * commands executed in the user's shell to the Atchim server for logging.
+ */
+
+
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <string>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <queue>
-#include <algorithm>
-class AsyncLogger {
-private:
-    std::queue<std::string> commandQueue;
-    std::mutex queueMutex;
-    std::condition_variable cv;
-    std::thread dbThread;
-    bool stopThread = false;
-    sqlite3 *db;
+#include <iostream>
 
-    void databaseThreadFunction() {
-        while (true) {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            cv.wait(lock, [this]{ return !commandQueue.empty() || stopThread; });
-
-            if (stopThread && commandQueue.empty()) {
-                break;
-            }
-
-            std::string command = commandQueue.front();
-            commandQueue.pop();
-            lock.unlock();
-
-            logToDatabase(command);
-        }
-    }
-
-    void logToDatabase(const std::string &command) {
-        sqlite3_stmt *stmt;
-        const std::string sql = "INSERT INTO HISTORY (COMMAND) VALUES (?);";
-
-        // we wanna strip any newlines from the command
-        std::string stripped_command = command;
-        stripped_command.erase(
-            std::remove(stripped_command.begin(), stripped_command.end(), '\n'),
-            stripped_command.end());
-
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, stripped_command.c_str(), -1, SQLITE_TRANSIENT);
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                std::cerr << "SQL error: " << sqlite3_errmsg(db) << std::endl;
-            }
-
-            sqlite3_finalize(stmt);
-        } else {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db) << std::endl;
-        }
-    }
-
-public:
-    AsyncLogger(const std::string &db_name) {
-        if (sqlite3_open(db_name.c_str(), &db)) {
-            std::cerr << "Can't open database: " << sqlite3_errmsg(db) << std::endl;
-            exit(0);
-        }
-        dbThread = std::thread(&AsyncLogger::databaseThreadFunction, this);
-    }
-
-    ~AsyncLogger() {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            stopThread = true;
-        }
-        cv.notify_one();
-        dbThread.join();
-        sqlite3_close(db);
-    }
-
-    void logCommand(const std::string &command) {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            commandQueue.push(command);
-        }
-        cv.notify_one();
-    }
-};
-
+/**
+ * @brief The main function of the program.
+ * 
+ * @param argc The number of command-line arguments.
+ * @param argv An array of command-line arguments.
+ * @return int The exit status of the program.
+ */
 int main(int argc, char *argv[]) {
     if (argc != 3 || std::string(argv[1]) != "start") {
         std::cerr << "Invalid arguments" << std::endl;
         return 1;
     }
 
-    const char *homeDir = std::getenv("HOME");
-    if (homeDir == nullptr) {
-        std::cerr << "HOME environment variable not set" << std::endl;
+    std::string command = argv[2];
+
+    int sock;
+    struct sockaddr_un address;
+
+    // Create socket
+    sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == -1) {
+        std::cerr << "Socket creation failed" << std::endl;
         return 1;
     }
 
-    std::string dbPath = std::string(homeDir) + "/.atchim.db";
-    AsyncLogger logger(dbPath);  // AsyncLogger instance with database connection
+    // Connect to the server
+    address.sun_family = AF_UNIX;
+    strcpy(address.sun_path, "/tmp/atchim_socket");
+    if (connect(sock, (struct sockaddr *)&address, sizeof(address)) == -1) {
+        std::cerr << "Connection to server failed" << std::endl;
+        close(sock);
+        return 1;
+    }
 
-    std::string command = argv[2];
-    logger.logCommand(command);
+    // Send data (command)
+    if (write(sock, command.c_str(), command.length()) == -1) {
+        std::cerr << "Failed to send command" << std::endl;
+        close(sock);
+        return 1;
+    }
 
+    // Close the socket
+    close(sock);
     return 0;
 }
