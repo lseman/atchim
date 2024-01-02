@@ -118,7 +118,6 @@ void logToAtchim(const std::string &command) {
 
 int main(int argc, char *argv[]) {
     int master_fd, slave_fd;
-    struct termios original_termios, pty_termios;
 
     if (argc > 1) {
         ssh_host = argv[1]; // Assign the first argument to ssh_host

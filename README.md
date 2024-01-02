@@ -29,8 +29,7 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
    ```bash
    cd atchim
-   g++ atchim.cpp -o atchim
-   g++ atchim_server.cpp -o atchim_server -lsqlite3 -lpthread
+   make
    ```
 
 3. Start the atchim server (it will run as a daemon):
@@ -61,9 +60,11 @@ Before using Atchim, you'll need to have the following prerequisites installed o
       DB_PATH="$HOME/.atchim.db"
 
       # SQL query to fetch command history
-      SQL_QUERY="SELECT ID, COMMAND FROM HISTORY ORDER BY ID ASC;"
+      SQL_QUERY="SELECT ID, COMMAND, HOST, TIME FROM HISTORY ORDER BY ID ASC;"
 
-      selected_command=$(sqlite3 -separator ' ' "$DB_PATH" "$SQL_QUERY" | fzf --tac --no-sort | awk '{$1=""; print $0}' | sed 's/^[ \t]*//')
+      selected_command=$(sqlite3 -separator '@@@' "$DB_PATH" "$SQL_QUERY" |
+         column -t -s '@@@' | fzf --tac --no-sort |
+         awk '{$1=""; print $0}' | sed 's/^[ \t]*//' | awk '{print $1, $2, $3, $4}')
 
       if [[ -n $selected_command ]]; then
          RBUFFER=""
@@ -86,3 +87,5 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 - Each time you execute a command in your shell, the atchim client sends this command to the server for logging.
 
 - Use ctrl + r to interactively search your command history using fzf.
+
+- Use the assh wrapper if you want to log ssh commands to the database.
