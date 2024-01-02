@@ -123,6 +123,7 @@ class AsyncLogger {
                       << std::endl;
             exit(0);
         }
+        createTable();
         dbThread = std::thread(&AsyncLogger::databaseThreadFunction, this);
     }
 
@@ -140,6 +141,27 @@ class AsyncLogger {
         dbThread.join();
         sqlite3_close(db);
     }
+    
+    /**
+     * @brief Creates the table for logging commands.
+     * 
+     * This function creates the table for logging commands if it does not exist.
+     */
+    void createTable() {
+        const std::string sql =
+           "CREATE TABLE IF NOT EXISTS HISTORY("
+           "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
+           "COMMAND TEXT NOT NULL,"
+           "TIME DATETIME DEFAULT CURRENT_TIMESTAMP);";
+
+        char *err_msg = nullptr;
+        if (sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err_msg) !=
+            SQLITE_OK) {
+            std::cerr << "SQL error: " << err_msg << std::endl;
+            sqlite3_free(err_msg);
+        }
+    }
+
 
     /**
      * @brief Logs a command and adds it to the command queue.
