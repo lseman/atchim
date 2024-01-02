@@ -21,7 +21,7 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 1. Clone the Atchim repository to your local machine:
 
    ```bash
-   git clone https://github.com/yourusername/atchim.git
+   git clone https://github.com/lseman/atchim.git
    ```
 
 2. Build achim
