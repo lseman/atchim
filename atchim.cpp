@@ -1,3 +1,6 @@
+// atchim is a naive atuin pseudo-clone
+// Laio Oriel Seman < laio [at] gos.ufsc.br >
+
 #include <algorithm>
 #include <iostream>
 #include <sqlite3.h>

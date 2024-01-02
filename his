@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Path to your SQLite database
+DB_PATH="$HOME/.atchim.db"
+
+# SQL query to fetch command history
+SQL_QUERY="SELECT ID, COMMAND FROM HISTORY ORDER BY ID DESC;"
+
+selected_command=$(sqlite3 -separator ' ' "$DB_PATH" "$SQL_QUERY" | fzf --tac --no-sort | awk '{$1=""; print $0}' | sed 's/^[ \t]*//')
+
+if [ -n "$selected_command" ]; then
+    eval "$selected_command"
+fi
