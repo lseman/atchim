@@ -23,22 +23,6 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
    ```bash
    git clone https://github.com/lseman/atchim.git
-
-
-## Getting Started
-
-### Prerequisites
-
-Before using Atchim, you'll need to have the following prerequisites installed on your system:
-
-- [SQLite](https://www.sqlite.org/) for the database.
-
-### Installation
-
-1. Clone the Atchim repository to your local machine:
-
-   ```bash
-   git clone https://github.com/lseman/atchim.git
    ```
 
 2. Build achim
