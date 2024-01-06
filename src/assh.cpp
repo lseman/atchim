@@ -120,12 +120,19 @@ void logToAtchim(const std::string &command) {
 int master_fd;
 pid_t child_pid = -1;
 
-v
+void handle_sigint(int sig) {
+    if (master_fd >= 0) {
+        char ctrl_c = 0x03;           // ASCII code for Ctrl+C
+        write(master_fd, &ctrl_c, 1); // Write Ctrl+C to the PTY
+    }
+}
+
 /**
  * @brief Callback function for reading data from a stream.
- * 
- * This function is called when data is read from the stream. It handles the read data and performs necessary operations.
- * 
+ *
+ * This function is called when data is read from the stream. It handles the
+ * read data and performs necessary operations.
+ *
  * @param stream The stream from which the data is read.
  * @param nread The number of bytes read.
  * @param buf The buffer containing the read data.
@@ -145,13 +152,12 @@ void read_callback(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
     delete[] buf->base;
 }
 
-
 /**
  * @brief Callback function for handling read events on the pty.
- * 
+ *
  * This function is called when there is data available to be read from the pty.
  * It reads the data from the pty and writes it to the standard output.
- * 
+ *
  * @param handle The uv_poll_t handle associated with the pty.
  * @param status The status of the read operation.
  * @param events The events that triggered the callback.
@@ -163,21 +169,26 @@ void on_pty_read(uv_poll_t *handle, int status, int events) {
         ssize_t bytes_read = read(master_fd, buffer, sizeof(buffer));
         if (bytes_read > 0) {
             write(STDOUT_FILENO, buffer, bytes_read);
+        } else if (bytes_read == 0 || (bytes_read < 0 && errno != EAGAIN)) {
+            // EOF or read error, indicating SSH session has ended
+            uv_poll_stop(handle);                  // Stop the poll handle
+            uv_close((uv_handle_t *)handle, NULL); // Close the handle
+            uv_stop(uv_default_loop());            // Stop the event loop
+            return;
         }
-        // Add error handling
     }
 }
 
 std::string commandBuffer; // Global or static command buffer
 /**
  * @brief Callback function for handling stdin read events.
- * 
+ *
  * This function is called when there is data available to be read from stdin.
  * It reads the data from stdin, processes it, and writes it to the PTY master.
- * It also handles special characters such as arrow keys, backspace, and newline.
- * If the read operation encounters an error or reaches the end of file (EOF),
- * it stops the poll handle, closes the handle, and stops the event loop.
- * 
+ * It also handles special characters such as arrow keys, backspace, and
+ * newline. If the read operation encounters an error or reaches the end of file
+ * (EOF), it stops the poll handle, closes the handle, and stops the event loop.
+ *
  * @param handle The uv_poll_t handle for stdin.
  * @param status The status of the read operation.
  * @param events The events that triggered the callback.
@@ -234,12 +245,6 @@ void on_stdin_read(uv_poll_t *handle, int status, int events) {
                 int master_fd = reinterpret_cast<intptr_t>(handle->data);
                 write(master_fd, &ch, 1);
             }
-        } else if (bytes_read == 0 || (bytes_read < 0 && errno != EAGAIN)) {
-            // EOF or read error, indicating SSH session has ended
-            uv_poll_stop(handle);  // Stop the poll handle
-            uv_close((uv_handle_t *)handle, NULL);  // Close the handle
-            uv_stop(uv_default_loop());  // Stop the event loop
-            return;
         }
     }
 }
