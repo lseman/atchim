@@ -3,3 +3,4 @@ assh
 atchim
 atchim_server
 .atchim.db
+*.bak

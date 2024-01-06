@@ -2,7 +2,7 @@
 CXX = clang++
 
 # Compiler Flags
-CXXFLAGS = -std=c++20 -Wall -Wextra -flto=full
+#CXXFLAGS = -std=c++20 -Wall -Wextra -flto=thin
 
 # Executable Names
 EXECUTABLE_atchim = atchim
@@ -12,7 +12,7 @@ EXECUTABLE_assh = assh
 # Libraries
 LIBS_atchim = 
 LIBS_atchim_server = -lpthread -lsqlite3
-LIBS_assh = -lutil
+LIBS_assh = -lutil -luv
 
 # Targets
 all: $(EXECUTABLE_atchim) $(EXECUTABLE_atchim_server) $(EXECUTABLE_assh)
