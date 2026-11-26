@@ -1,0 +1,10 @@
+# Atchim theme: catppuccin-mocha
+ATCHIM_COLOR_FG="#cdd6f4"
+ATCHIM_COLOR_MUTED="#9399b2"
+ATCHIM_COLOR_COMMAND="#89b4fa"
+ATCHIM_COLOR_STRING="#a6e3a1"
+ATCHIM_COLOR_OPTION="#f9e2af"
+ATCHIM_COLOR_OPERATOR="#cba6f7"
+ATCHIM_COLOR_PATH="#f38ba8"
+ATCHIM_FZF_COLOR_BASE="fg:#cdd6f4,hl:#89b4fa,fg+:#f5e0dc,hl+:#89dceb"
+ATCHIM_FZF_COLOR_UI="border:#45475a,header:#9399b2,info:#9399b2,prompt:#89b4fa,pointer:#89b4fa,marker:#a6e3a1,spinner:#f9e2af"

@@ -1,0 +1,137 @@
+#!/bin/sh
+set -eu
+
+shell=""
+rc_file=""
+dry_run="no"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./install --shell zsh [--rc-file PATH] [--dry-run]
+
+Installs Atchim shell integration into your shell startup file.
+Set ATCHIM_DAEMON=1 before running install to opt into the background daemon.
+EOF
+}
+
+quote_sh() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+start_daemon_if_needed() {
+    case "${ATCHIM_DAEMON:-0}" in
+        1 | true | TRUE | yes | YES | on | ON) ;;
+        *) return ;;
+    esac
+
+    socket_path=${ATCHIM_SOCKET:-/tmp/atchim_socket}
+
+    if command -v pgrep >/dev/null 2>&1 &&
+        pgrep -f -- "$atchim_server_bin" >/dev/null 2>&1 &&
+        [ -S "$socket_path" ]; then
+        echo "Atchim daemon is already running."
+        return
+    fi
+
+    if [ -S "$socket_path" ]; then
+        rm -f "$socket_path"
+    fi
+
+    "$atchim_server_bin" >/dev/null 2>&1 || true
+    echo "Started Atchim daemon."
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --shell)
+            [ "$#" -ge 2 ] || {
+                usage >&2
+                exit 1
+            }
+            shell="$2"
+            shift 2
+            ;;
+        --rc-file)
+            [ "$#" -ge 2 ] || {
+                usage >&2
+                exit 1
+            }
+            rc_file="$2"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run="yes"
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$shell" != "zsh" ]; then
+    echo "Atchim currently supports: ./install --shell zsh" >&2
+    exit 1
+fi
+
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+atchim_bin="$repo_dir/atchim"
+atchim_server_bin="$repo_dir/atchim_server"
+atchim_daemon="${ATCHIM_DAEMON:-0}"
+
+if [ ! -x "$atchim_bin" ] || [ ! -x "$atchim_server_bin" ]; then
+    echo "Building Atchim..."
+    make -C "$repo_dir"
+fi
+
+if [ -z "$rc_file" ]; then
+    zdotdir=${ZDOTDIR:-"$HOME"}
+    rc_file="$zdotdir/.zshrc"
+fi
+
+block_start="# >>> atchim >>>"
+block_end="# <<< atchim <<<"
+block=$(cat <<EOF
+$block_start
+export ATCHIM_BIN=$(quote_sh "$atchim_bin")
+export ATCHIM_SERVER_BIN=$(quote_sh "$atchim_server_bin")
+export ATCHIM_DAEMON=$(quote_sh "$atchim_daemon")
+eval "\$("\$ATCHIM_BIN" init zsh)"
+$block_end
+EOF
+)
+
+if [ "$dry_run" = "yes" ]; then
+    echo "Would install this block into $rc_file:"
+    printf '%s\n' "$block"
+    exit 0
+fi
+
+mkdir -p "$(dirname -- "$rc_file")"
+touch "$rc_file"
+
+tmp_file=$(mktemp)
+awk -v start="$block_start" -v end="$block_end" '
+    $0 == start { skip = 1; next }
+    $0 == end { skip = 0; next }
+    !skip { print }
+' "$rc_file" >"$tmp_file"
+
+{
+    cat "$tmp_file"
+    printf '\n%s\n' "$block"
+} >"$rc_file"
+
+rm -f "$tmp_file"
+
+start_daemon_if_needed
+
+echo "Atchim zsh integration installed in $rc_file"
+echo "Restart your shell or run: source $(quote_sh "$rc_file")"

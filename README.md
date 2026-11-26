@@ -7,7 +7,7 @@ Atchim is a simple command-line tool for logging and visualizing your command hi
 - Log all executed commands to an SQLite database.
 - Search and filter your command history with FZF.
 - Visualize and review your command history easily.
-- Client-Server architecture to efficiently handle command logging.
+- SQLite-first logging with an optional daemon mode.
 
 ## Getting Started
 
@@ -16,6 +16,9 @@ Atchim is a simple command-line tool for logging and visualizing your command hi
 Before using Atchim, you'll need to have the following prerequisites installed on your system:
 
 - [SQLite](https://www.sqlite.org/) for the database.
+- [FZF](https://github.com/junegunn/fzf) for interactive history search.
+- [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) if
+  you want inline history suggestions while typing.
 
 ### Installation
 
@@ -25,67 +28,97 @@ Before using Atchim, you'll need to have the following prerequisites installed o
    git clone https://github.com/lseman/atchim.git
    ```
 
-2. Build achim
+2. Build Atchim
 
    ```bash
    cd atchim
    make
    ```
 
-3. Start the atchim server (it will run as a daemon):
+3. Install the zsh integration:
 
    ```bash
-   ./atchim_server
+   ./install --shell zsh
    ```
 
-4. Add this to your shell configuration file (e.g., ~/.bashrc or ~/.zshrc)
+   Restart your shell, or run `source ~/.zshrc`.
+
+The installer adds a managed Atchim block to `.zshrc`. That block logs commands
+with a `preexec` hook and binds a searchable fzf history view to Ctrl-R.
+Run `ATCHIM_DAEMON=1 ./install --shell zsh` if you want the optional daemon
+mode enabled in that managed block.
+
+### Manual zsh Setup
+
+If you prefer to manage dotfiles yourself, add this to `.zshrc`:
 
    ```bash
-
-   _atchim_preexec() {
-      local command="$1"
-      /path/to/atchim "start" "$command"
-   }
-
-   if [ "$SHELL" = "/bin/zsh" ]; then
-      autoload -U add-zsh-hook
-      add-zsh-hook preexec _atchim_preexec
-   else
-      trap '_atchim_preexec "$BASH_COMMAND"' DEBUG
-   fi
-   _his(){
-
-      emulate -L zsh
-      zle -I
-      DB_PATH="$HOME/.atchim.db"
-
-      # SQL query to fetch command history
-      SQL_QUERY="SELECT ID, COMMAND, HOST, TIME FROM HISTORY ORDER BY ID ASC;"
-
-      selected_command=$(sqlite3 -separator '@@@' "$DB_PATH" "$SQL_QUERY" |
-         column -t -s '@@@' | fzf --tac --no-sort |
-         awk '{$1=""; print $0}' | sed 's/^[ \t]*//' | awk '{print $1, $2, $3, $4}')
-
-      if [[ -n $selected_command ]]; then
-         RBUFFER=""
-         LBUFFER=$selected_command
-         zle accept-line
-      fi
-
-   }
-
-   zle -N _his_widget _his
-   bindkey -M emacs '^r' _his_widget
-   bindkey -M vicmd '^r' _his_widget
-   bindkey -M viins '^r' _his_widget
+   export ATCHIM_BIN=/path/to/atchim
+   eval "$("$ATCHIM_BIN" init zsh)"
    ```
 
 #### Usage
 
-- The atchim server runs in the background, listening for commands sent by the atchim client.
+- By default, Atchim writes command history directly to SQLite.
 
-- Each time you execute a command in your shell, the atchim client sends this command to the server for logging.
+- Set `ATCHIM_DAEMON=1` to opt into the background daemon. In daemon mode,
+  Atchim starts `atchim_server`, sends log events over `ATCHIM_SOCKET`, and
+  falls back to direct SQLite if the daemon is unavailable.
+
+- History search, imports, and default logging read/write SQLite directly.
 
 - Use ctrl + r to interactively search your command history using fzf.
 
+- Press the up arrow on an empty prompt to search from your recent history.
+
+- If `zsh-autosuggestions` is installed, Atchim adds recent history suggestions
+  as you type. Press Tab to accept a visible suggestion.
+
+- Set `ATCHIM_THEME` to change the Ctrl-R history colors. Built-in themes live
+  in `themes/`: `github-dark`, `github-light`, `catppuccin-mocha`, `dracula`,
+  and `nord`.
+
 - Use the assh wrapper if you want to log ssh commands to the database.
+
+### Themes
+
+The zsh integration loads `github-dark` by default:
+
+```bash
+export ATCHIM_THEME=dracula
+```
+
+Theme lookup uses `themes/` next to `ATCHIM_BIN`. Set `ATCHIM_THEME_DIR` to use
+another directory, or set `ATCHIM_THEME` to a theme file path:
+
+```bash
+export ATCHIM_THEME_DIR="$HOME/.config/atchim/themes"
+export ATCHIM_THEME=my-theme
+```
+
+Theme files are shell snippets with color variables:
+
+```bash
+ATCHIM_COLOR_COMMAND="#58a6ff"
+ATCHIM_COLOR_STRING="#3fb950"
+ATCHIM_FZF_COLOR_BASE="fg:#c9d1d9,hl:#58a6ff,fg+:#f0f6fc,hl+:#79c0ff"
+ATCHIM_FZF_COLOR_UI="border:#30363d,header:#8b949e,info:#8b949e,prompt:#58a6ff,pointer:#58a6ff,marker:#3fb950,spinner:#d29922"
+```
+
+### CLI
+
+```bash
+atchim init zsh                  # print shell integration
+atchim import atuin              # import ~/.local/share/atuin/history.db
+atchim import atuin /path/db     # import a specific Atuin history DB
+atchim start "make test"          # log a local command
+atchim log --host prod "uptime"   # log a command for a host
+atchim history -n 100             # print recent history
+atchim search docker              # search command text and host
+atchim suggest "git c"             # print the newest matching history prefix
+atchim delete <id>               # delete a specific history entry by ID
+atchim clear                     # clear all history entries
+```
+
+Set `ATCHIM_DB` to choose a different SQLite database path, or
+`ATCHIM_SOCKET` to choose a different Unix socket path in daemon mode.

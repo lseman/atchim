@@ -1,0 +1,10 @@
+# Atchim theme: github-dark
+ATCHIM_COLOR_FG="#c9d1d9"
+ATCHIM_COLOR_MUTED="#8b949e"
+ATCHIM_COLOR_COMMAND="#58a6ff"
+ATCHIM_COLOR_STRING="#3fb950"
+ATCHIM_COLOR_OPTION="#d29922"
+ATCHIM_COLOR_OPERATOR="#bc8cff"
+ATCHIM_COLOR_PATH="#ff7b72"
+ATCHIM_FZF_COLOR_BASE="fg:#c9d1d9,hl:#58a6ff,fg+:#f0f6fc,hl+:#79c0ff"
+ATCHIM_FZF_COLOR_UI="border:#30363d,header:#8b949e,info:#8b949e,prompt:#58a6ff,pointer:#58a6ff,marker:#3fb950,spinner:#d29922"

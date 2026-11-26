@@ -1,365 +1,366 @@
-/**
- * @file: atchim_server.cpp
- * @author: Laio Oriel Seman
- * @contact: laio [at] gos.ufsc.br
- *
- * Description: Server component of the Atchim command logging tool. This server
- * listens for commands from the Atchim client and logs them to a SQLite
- * database.
- */
-
-#include <algorithm>
-#include <condition_variable>
+// atchim_server.cpp
 #include <fcntl.h>
-#include <iostream>
-#include <mutex>
-#include <pthread.h>
-#include <queue>
-#include <signal.h>
 #include <sqlite3.h>
-#include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <syslog.h>
-#include <thread>
 #include <unistd.h>
 
-#define SOCKET_PATH "/tmp/atchim_socket"
-#define BUFFER_SIZE 1024
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <vector>
 
-/**
- * @brief Daemonizes the process by forking and closing file descriptors.
- * 
- * This function is used to daemonize the process, detaching it from the controlling terminal
- * and running it in the background as a daemon. It performs the following steps:
- * 1. Forks the process.
- * 2. If the fork fails, the function exits with failure status.
- * 3. If the fork succeeds and the parent process is still running, the function exits with success status.
- * 4. The child process becomes the new session leader and process group leader by calling setsid().
- * 5. Ignores the SIGCHLD and SIGHUP signals.
- * 6. Forks the process again.
- * 7. If the second fork fails, the function exits with failure status.
- * 8. If the second fork succeeds and the parent process is still running, the function exits with success status.
- * 9. Sets the file mode creation mask to 0 and changes the current working directory to the root directory.
- * 10. Closes all open file descriptors except for stdin, stdout, and stderr.
- * 11. Opens /dev/null and duplicates the file descriptor to stdin, stdout, and stderr.
- */
-void daemonize() {
-    pid_t pid = fork();
-    if (pid < 0) {
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0) {
-        exit(EXIT_SUCCESS); // Parent exits
-    }
+#include "atchim/db.hpp"
 
-    if (setsid() < 0) {
-        exit(EXIT_FAILURE);
-    }
+namespace {
+constexpr std::string_view SOCKET_PATH = "/tmp/atchim_socket";
+constexpr size_t BUFFER_SIZE = 1024;
+constexpr size_t MAX_THREADS = 10;
+constexpr size_t MAX_COMMAND_LENGTH = 4096;
+volatile sig_atomic_t shutdown_requested = 0;
 
-    signal(SIGCHLD, SIG_IGN);
-    signal(SIGHUP, SIG_IGN);
-
-    pid = fork();
-    if (pid < 0) {
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0) {
-        exit(EXIT_SUCCESS); // First child exits
-    }
-
-    umask(0);
-    chdir("/");
-
-    // Close all open file descriptors
-    for (int x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
-        close(x);
-    }
-
-    open("/dev/null", O_RDWR);
-    dup(0);
-    dup(0);
+std::string getEnvOrDefault(const char *name, std::string_view fallback) {
+    const char *value = std::getenv(name);
+    return value ? value : std::string(fallback);
 }
 
-/**
- * @brief Handles signals for graceful shutdown.
- *
- * This function is responsible for handling signals, such as SIGTERM,
- * to perform a graceful shutdown of the server. It logs the received
- * signal and shuts down the server by performing necessary cleanup
- * operations.
- *
- * @param sig The signal number.
- */
-void handleSignal(int sig) {
-    // Handle signals like SIGTERM for graceful shutdown
-    syslog(LOG_INFO, "Received signal %d, shutting down.", sig);
-    // Perform cleanup...
-    exit(EXIT_SUCCESS);
+std::filesystem::path databasePath() {
+    if (const char *db = std::getenv("ATCHIM_DB")) {
+        return db;
+    }
+    const char *home = std::getenv("HOME");
+    if (!home)
+        throw std::runtime_error("HOME not set");
+    return std::filesystem::path(home) / ".atchim.db";
 }
 
-/**
- * @class AsyncLogger
- * @brief A class that asynchronously logs commands to a SQLite database.
- */
-class AsyncLogger {
-  private:
-    std::queue<std::string> commandQueue;
-    std::mutex queueMutex;
-    std::condition_variable cv;
-    std::thread dbThread;
-    bool stopThread = false;
-    sqlite3 *db;
+void requestShutdown(int) { shutdown_requested = 1; }
 
-    /**
-     * @brief This function is responsible for processing commands from a
-     * command queue and logging them to the database.
-     *
-     * It runs in a separate thread and continuously waits for commands to be
-     * added to the queue. Once a command is available, it retrieves the command
-     * from the front of the queue, logs it to the database, and repeats the
-     * process until the thread is stopped.
-     */
-    void databaseThreadFunction() {
-        while (true) {
-            std::unique_lock<std::mutex> lock(queueMutex);
-            cv.wait(lock,
-                    [this] { return !commandQueue.empty() || stopThread; });
-
-            if (stopThread && commandQueue.empty()) {
-                break;
-            }
-
-            std::string command = commandQueue.front();
-            commandQueue.pop();
-            lock.unlock();
-
-            logToDatabase(command);
-        }
+void installShutdownHandler(int signal_number) {
+    struct sigaction action{};
+    action.sa_handler = requestShutdown;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    if (sigaction(signal_number, &action, nullptr) == -1) {
+        throw std::system_error(errno, std::system_category(),
+                                "Failed to install signal handler");
     }
+}
+} // namespace
 
-    /**
-     * Logs the given command to the database.
-     *
-     * @param command The command to be logged.
-     */
-    void logToDatabase(const std::string &message) {
-        std::string ssh_host, command;
-
-        // Split the message into ssh_host and command, if possible
-        size_t separatorPos = message.find('\t');
-        if (separatorPos != std::string::npos) {
-            // If \0 is found, split the message
-            ssh_host = message.substr(0, separatorPos);
-            command = message.substr(separatorPos + 1);
-        } else {
-            // If \0 is not found, treat the whole message as command and host
-            // as "local"
-            ssh_host = "local";
-            command = message;
-        }
-
-        // Remove newlines from command
-        command.erase(std::remove(command.begin(), command.end(), '\n'),
-                      command.end());
-
-        // Prepare SQL statement
-        const std::string sql =
-            "INSERT INTO HISTORY (COMMAND, HOST) VALUES (?, ?);";
-        sqlite3_stmt *stmt;
-
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-            SQLITE_OK) {
-            // Bind ssh_host and command to the prepared statement
-            sqlite3_bind_text(stmt, 1, command.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, ssh_host.c_str(), -1, SQLITE_TRANSIENT);
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                std::cerr << "SQL error: " << sqlite3_errmsg(db) << std::endl;
-            }
-
-            sqlite3_finalize(stmt);
-        } else {
-            std::cerr << "Failed to prepare statement: " << sqlite3_errmsg(db)
-                      << std::endl;
-        }
-    }
-
+class Daemon {
   public:
-    /**
-     * @brief Constructs an AsyncLogger object with the specified database name.
-     *
-     * @param db_name The name of the database to be opened.
-     */
-    AsyncLogger(const std::string &db_name) {
-        if (sqlite3_open(db_name.c_str(), &db)) {
-            std::cerr << "Can't open database: " << sqlite3_errmsg(db)
-                      << std::endl;
-            exit(0);
-        }
-        createTable();
-        dbThread = std::thread(&AsyncLogger::databaseThreadFunction, this);
-    }
-
-    /**
-     * @brief Destructor for the AsyncLogger class.
-     *
-     * This destructor stops the logging thread, closes the SQLite database
-     * connection, and cleans up resources.
-     */
-    ~AsyncLogger() {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            stopThread = true;
-        }
-        cv.notify_one();
-        dbThread.join();
-        sqlite3_close(db);
-    }
-
-    /**
-     * @brief Creates the table for logging commands.
-     *
-     * This function creates the table for logging commands if it does not
-     * exist.
-     */
-    void createTable() {
-        const std::string sql = "CREATE TABLE IF NOT EXISTS HISTORY("
-                                "ID INTEGER PRIMARY KEY AUTOINCREMENT,"
-                                "COMMAND TEXT NOT NULL,"
-                                "HOST TEXT DEFAULT local,"
-                                "TIME DATETIME DEFAULT CURRENT_TIMESTAMP);";
-
-        char *err_msg = nullptr;
-        if (sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err_msg) !=
-            SQLITE_OK) {
-            std::cerr << "SQL error: " << err_msg << std::endl;
-            sqlite3_free(err_msg);
-        }
-    }
-
-    /**
-     * @brief Logs a command and adds it to the command queue.
-     *
-     * This function takes a command as input and adds it to the command queue.
-     * It also notifies the waiting threads that a new command is available.
-     *
-     * @param command The command to be logged and added to the queue.
-     */
-    void logCommand(const std::string &command) {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            commandQueue.push(command);
-        }
-        cv.notify_one();
+    static void daemonize() {
+        auto fork_and_exit = []() {
+            const pid_t pid = fork();
+            if (pid < 0)
+                throw std::runtime_error("Fork failed");
+            if (pid > 0)
+                exit(EXIT_SUCCESS);
+        };
+        fork_and_exit();
+        if (setsid() < 0)
+            throw std::runtime_error("Setsid failed");
+        signal(SIGCHLD, SIG_IGN);
+        signal(SIGHUP, SIG_IGN);
+        fork_and_exit();
+        umask(0);
+        std::filesystem::current_path("/");
+        for (int x = sysconf(_SC_OPEN_MAX); x >= 0; x--)
+            close(x);
+        [[maybe_unused]] auto null_fd = open("/dev/null", O_RDWR);
+        dup2(0, 1);
+        dup2(0, 2);
     }
 };
 
-std::mutex logger_mutex;
-AsyncLogger *global_logger = nullptr; // Global logger instance
-
-void initialize_global_logger() {
-    const char *homeDir = std::getenv("HOME");
-    if (homeDir == nullptr) {
-        std::cerr << "HOME environment variable not set" << std::endl;
-        exit(EXIT_FAILURE);
+class AsyncLogger {
+  public:
+    explicit AsyncLogger(const std::filesystem::path &db_path)
+        : db_(db_path), stop_flag_(false) {
+        createTable();
+        worker_ = std::thread([this]() { databaseThreadFunction(); });
     }
-    std::string dbPath = std::string(homeDir) + "/.atchim.db";
-    global_logger = new AsyncLogger(dbPath);
-}
+    ~AsyncLogger() {
+        {
+            std::lock_guard lock(queue_mutex_);
+            stop_flag_ = true;
+        }
+        cv_.notify_one();
+        if (worker_.joinable())
+            worker_.join();
+    }
+    void logCommand(std::string command) {
+        if (command.size() > MAX_COMMAND_LENGTH) {
+            syslog(LOG_WARNING, "Discarded long command (%zu bytes)",
+                   command.size());
+            return;
+        }
+        {
+            std::lock_guard lock(queue_mutex_);
+            command_queue_.push(std::move(command));
+        }
+        cv_.notify_one();
+    }
 
-void *handle_client(void *arg) {
-    int client_fd = *(int *)arg;
-    delete (int *)arg; // Clean up the heap memory
+  private:
+    void createTable() {
+        constexpr auto sql = R"(
+            CREATE TABLE IF NOT EXISTS HISTORY(
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                COMMAND TEXT NOT NULL,
+                HOST TEXT DEFAULT 'local',
+                TIME DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS IDX_HISTORY_TIME ON HISTORY(TIME);
+            CREATE INDEX IF NOT EXISTS IDX_HISTORY_HOST ON HISTORY(HOST);
+        )";
+        db_.execute(sql);
+    }
+    void logToDatabase(std::string_view message) {
+        while (!message.empty() &&
+               (message.back() == '\n' || message.back() == '\r')) {
+            message.remove_suffix(1);
+        }
+        auto [host, command] = parseMessage(message);
+        const std::string sql =
+            "INSERT INTO HISTORY (COMMAND, HOST) VALUES (?, ?);";
+        sqlite3_stmt *stmt = nullptr;
+        auto db_handle = db_.get();
 
-    std::cout << "Client connected" << std::endl;
+        if (sqlite3_prepare_v2(db_handle, sql.c_str(), -1, &stmt, nullptr) !=
+            SQLITE_OK) {
+            syslog(LOG_ERR, "Prepare fail: %s", sqlite3_errmsg(db_handle));
+            return;
+        }
 
-    char buffer[BUFFER_SIZE];
-    while (true) {
-        ssize_t read_bytes = read(client_fd, buffer, sizeof(buffer) - 1);
+        sqlite3_bind_text(stmt, 1, command.data(), command.size(),
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, host.data(), host.size(), SQLITE_TRANSIENT);
 
-        if (read_bytes > 0) {
-            buffer[read_bytes] = '\0'; // Null-terminate the string
-            std::lock_guard<std::mutex> lock(
-                logger_mutex); // Synchronize access
-            global_logger->logCommand(buffer);
-        } else if (read_bytes == 0) {
-            // Client disconnected
-            break;
-        } else {
-            // An error occurred
-            std::cerr << "Read error: " << strerror(errno) << std::endl;
-            break;
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            syslog(LOG_ERR, "Exec fail: %s (command: %.100s)",
+                   sqlite3_errmsg(db_handle), command.data());
+        }
+        sqlite3_finalize(stmt);
+    }
+    void databaseThreadFunction() {
+        while (true) {
+            std::string message;
+            {
+                std::unique_lock lock(queue_mutex_);
+                cv_.wait(lock, [this]() {
+                    return !command_queue_.empty() || stop_flag_;
+                });
+                if (stop_flag_ && command_queue_.empty())
+                    break;
+                message = std::move(command_queue_.front());
+                command_queue_.pop();
+            }
+            logToDatabase(message);
+        }
+    }
+    static std::pair<std::string_view, std::string_view>
+    parseMessage(std::string_view message) {
+        auto tab_pos = message.find('\t');
+        if (tab_pos == std::string_view::npos)
+            return {"local", message};
+        return {message.substr(0, tab_pos), message.substr(tab_pos + 1)};
+    }
+    atchim::SQLiteDatabase db_;
+    std::queue<std::string> command_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable cv_;
+    std::thread worker_;
+    std::atomic<bool> stop_flag_;
+};
+
+class UnixSocket {
+  public:
+    UnixSocket() = default;
+
+    explicit UnixSocket(int fd) : fd_(fd) {
+        if (fd_ == -1)
+            throw std::system_error(errno, std::system_category(),
+                                    "Invalid socket");
+    }
+
+    static UnixSocket create() {
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd == -1)
+            throw std::system_error(errno, std::system_category(),
+                                    "Socket creation failed");
+        return UnixSocket(fd);
+    }
+
+    ~UnixSocket() {
+        if (fd_ != -1)
+            close(fd_);
+    }
+    UnixSocket(UnixSocket &&o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
+    UnixSocket &operator=(UnixSocket &&o) noexcept {
+        if (this != &o) {
+            if (fd_ != -1)
+                close(fd_);
+            fd_ = o.fd_;
+            o.fd_ = -1;
+        }
+        return *this;
+    }
+    int get() const { return fd_; }
+
+  private:
+    int fd_;
+};
+
+class SocketServer {
+  public:
+    SocketServer(const std::filesystem::path &socket_path,
+                 std::shared_ptr<AsyncLogger> logger)
+        : socket_path_(socket_path), logger_(std::move(logger)),
+          server_socket_(UnixSocket::create()), running_(true) {
+        const std::string path_str = socket_path_.string();
+        if (path_str.empty() ||
+            path_str.length() > sizeof(sockaddr_un::sun_path) - 1) {
+            throw std::invalid_argument("Invalid socket path");
+        }
+
+        std::filesystem::remove(socket_path_);
+        struct sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        std::strncpy(address.sun_path, path_str.c_str(),
+                     sizeof(address.sun_path) - 1);
+        socklen_t addrLen =
+            offsetof(sockaddr_un, sun_path) + path_str.length() + 1;
+
+        int opt = 1;
+        setsockopt(server_socket_.get(), SOL_SOCKET, SO_REUSEADDR, &opt,
+                   sizeof(opt));
+
+        if (bind(server_socket_.get(), reinterpret_cast<sockaddr *>(&address),
+                 addrLen) == -1)
+            throw std::system_error(errno, std::system_category(),
+                                    "Bind failed");
+
+        if (listen(server_socket_.get(), SOMAXCONN) == -1)
+            throw std::system_error(errno, std::system_category(),
+                                    "Listen failed");
+
+        for (size_t i = 0; i < MAX_THREADS; ++i)
+            threads_.emplace_back(&SocketServer::workerThread, this);
+    }
+
+    ~SocketServer() {
+        shutdown();
+        std::filesystem::remove(socket_path_);
+    }
+
+    void run() {
+        while (!shutdown_requested) {
+            int client_fd = accept(server_socket_.get(), nullptr, nullptr);
+            if (client_fd == -1) {
+                if (shutdown_requested)
+                    break;
+                syslog(LOG_ERR, "Accept failed: %s", strerror(errno));
+                continue;
+            }
+            {
+                std::lock_guard lock(queue_mutex_);
+                client_queue_.emplace(client_fd);
+            }
+            client_queue_cv_.notify_one();
         }
     }
 
-    std::cout << "Client disconnected" << std::endl;
-    close(client_fd);
-    return NULL;
-}
-
-/**
- * @brief The main function of the atchim_server program.
- *
- * This function is the entry point of the atchim_server program. It sets up a
- * daemon process, creates a Unix domain socket, listens for client connections,
- * and handles client commands.
- *
- * @return int The exit status of the program.
- */
-
-int main() {
-    daemonize();
-
-    const char *homeDir = std::getenv("HOME");
-    if (homeDir == nullptr) {
-        std::cerr << "HOME environment variable not set" << std::endl;
-        return 1;
-    }
-    std::string dbPath = std::string(homeDir) + "/.atchim.db";
-    AsyncLogger logger(dbPath); // AsyncLogger instance with database connection
-    initialize_global_logger();
-
-    int server_fd;
-    struct sockaddr_un address;
-
-    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd == -1) {
-        exit(EXIT_FAILURE);
+    void shutdown() {
+        running_ = false;
+        client_queue_cv_.notify_all();
+        for (auto &t : threads_)
+            if (t.joinable())
+                t.join();
     }
 
-    memset(&address, 0, sizeof(struct sockaddr_un));
-    address.sun_family = AF_UNIX;
-    strncpy(address.sun_path, SOCKET_PATH, sizeof(address.sun_path) - 1);
-
-    unlink(SOCKET_PATH);
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) == -1) {
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_fd, SOMAXCONN) == -1) {
-        close(server_fd);
-        exit(EXIT_FAILURE);
-    }
-
-    while (true) {
-        int *client_fd = new int; // Allocate memory on the heap
-        *client_fd = accept(server_fd, NULL, NULL);
-        if (*client_fd == -1) {
-            delete client_fd; // Clean up the heap memory
-            continue;
-        }
-
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL, handle_client, client_fd) != 0) {
-            close(*client_fd);
-            delete client_fd; // Clean up the heap memory
+  private:
+    void workerThread() {
+        while (running_) {
+            UnixSocket client;
+            {
+                std::unique_lock lock(queue_mutex_);
+                client_queue_cv_.wait(lock, [this] {
+                    return !running_ || !client_queue_.empty();
+                });
+                if (!running_ && client_queue_.empty())
+                    return;
+                client = std::move(client_queue_.front());
+                client_queue_.pop();
+            }
+            handleClient(std::move(client));
         }
     }
 
-    close(server_fd);
-    unlink(SOCKET_PATH);
-    return 0;
+    void handleClient(UnixSocket client) {
+        try {
+            std::array<char, BUFFER_SIZE> buffer{};
+            std::string message;
+            while (true) {
+                ssize_t n = read(client.get(), buffer.data(), buffer.size());
+                if (n > 0) {
+                    message.append(buffer.data(), n);
+                    if (message.find('\n') != std::string::npos)
+                        break;
+                } else if (n == 0) {
+                    break;
+                } else if (errno != EINTR) {
+                    throw std::system_error(errno, std::system_category(),
+                                            "Read error");
+                }
+            }
+            message = message.substr(0, message.find('\n'));
+            if (!message.empty())
+                logger_->logCommand(std::move(message));
+        } catch (const std::exception &e) {
+            syslog(LOG_ERR, "Client error: %s", e.what());
+        }
+    }
+
+    std::filesystem::path socket_path_;
+    std::shared_ptr<AsyncLogger> logger_;
+    UnixSocket server_socket_;
+    std::queue<UnixSocket> client_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable client_queue_cv_;
+    std::vector<std::thread> threads_;
+    std::atomic<bool> running_;
+};
+
+int main() try {
+    Daemon::daemonize();
+    installShutdownHandler(SIGTERM);
+    installShutdownHandler(SIGINT);
+
+    auto logger = std::make_shared<AsyncLogger>(databasePath());
+    SocketServer server(getEnvOrDefault("ATCHIM_SOCKET", SOCKET_PATH),
+                        std::move(logger));
+    server.run();
+    server.shutdown();
+    return EXIT_SUCCESS;
+} catch (const std::exception &e) {
+    syslog(LOG_ERR, "Fatal: %s", e.what());
+    return EXIT_FAILURE;
 }
