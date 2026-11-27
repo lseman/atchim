@@ -10,21 +10,13 @@
 #include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
+#include <fnmatch.h>
+#include "atchim/db.hpp"
+
 #include <unistd.h>
 #include <uv.h>
 
 #define BUFFER_SIZE 4096
-#define SOCKET_PATH "/tmp/atchim_socket"
-
-namespace {
-std::string socketPath() {
-    const char *value = std::getenv("ATCHIM_SOCKET");
-    return value ? value : SOCKET_PATH;
-}
-} // namespace
-
 class PTYHandler {
   public:
     PTYHandler(const std::string &ssh_host, char **argv)
@@ -150,43 +142,36 @@ class PTYHandler {
         if (cmd.empty())
             return;
 
-        int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (sock == -1)
-            return;
-
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        const std::string path = socketPath();
-        if (path.empty() || path.length() > sizeof(sockaddr_un::sun_path) - 1) {
-            close(sock);
-            return;
+        const char *record = std::getenv("ATCHIM_RECORD");
+        if (record && std::string_view(record) == "0") return;
+        const char *ignoreSpace = std::getenv("ATCHIM_IGNORE_SPACE");
+        if ((!ignoreSpace || std::string_view(ignoreSpace) == "1") && cmd.front() == ' ') return;
+        const char *ignore = std::getenv("ATCHIM_IGNORE");
+        const std::string patterns = ignore ? ignore : "";
+        size_t offset = 0;
+        while (offset < patterns.size()) {
+            const auto end = patterns.find('\n', offset);
+            const auto pattern = patterns.substr(offset, end - offset);
+            if (!pattern.empty() && fnmatch(pattern.c_str(), cmd.c_str(), 0) == 0) return;
+            if (end == std::string::npos) break;
+            offset = end + 1;
         }
-        std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
-        socklen_t len =
-            offsetof(sockaddr_un, sun_path) + strlen(addr.sun_path) + 1;
-
-        if (connect(sock, reinterpret_cast<sockaddr *>(&addr), len) == -1) {
-            close(sock);
-            return;
+        try {
+            const char *configured = std::getenv("ATCHIM_DB");
+            const char *home = std::getenv("HOME");
+            if (!configured && !home) throw std::runtime_error("HOME is not set; use ATCHIM_DB");
+            const auto path = configured ? std::filesystem::path(configured)
+                : std::filesystem::path(home) / ".atchim.db";
+            atchim::SQLiteDatabase db(path);
+            atchim::createAtchimSchema(db);
+            atchim::Statement insert(db.get(), "INSERT INTO HISTORY(COMMAND, HOST) VALUES(?1, ?2);");
+            insert.bindText(1, cmd);
+            insert.bindText(2, ssh_host_);
+            if (insert.step() != SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db.get()));
+        } catch (const std::exception &error) {
+            // Logging failure must not terminate the SSH session or escape a C callback.
+            std::cerr << "atchim: SSH history write failed: " << error.what() << '\n';
         }
-
-        std::string msg = ssh_host_ + "\t" + cmd + "\n";
-        const char *data = msg.data();
-        size_t remaining = msg.size();
-
-        while (remaining > 0) {
-            ssize_t written = write(sock, data, remaining);
-            if (written > 0) {
-                data += written;
-                remaining -= written;
-            } else if (errno == EINTR) {
-                continue;
-            } else {
-                break;
-            }
-        }
-
-        close(sock);
     }
 
     int master_fd_ = -1;

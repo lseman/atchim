@@ -121,17 +121,7 @@ class AsyncLogger {
 
   private:
     void createTable() {
-        constexpr auto sql = R"(
-            CREATE TABLE IF NOT EXISTS HISTORY(
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                COMMAND TEXT NOT NULL,
-                HOST TEXT DEFAULT 'local',
-                TIME DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE INDEX IF NOT EXISTS IDX_HISTORY_TIME ON HISTORY(TIME);
-            CREATE INDEX IF NOT EXISTS IDX_HISTORY_HOST ON HISTORY(HOST);
-        )";
-        db_.execute(sql);
+        atchim::createAtchimSchema(db_);
     }
     void logToDatabase(std::string_view message) {
         while (!message.empty() &&
@@ -226,7 +216,7 @@ class UnixSocket {
     int get() const { return fd_; }
 
   private:
-    int fd_;
+    int fd_ = -1;
 };
 
 class SocketServer {

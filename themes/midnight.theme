@@ -1,0 +1,10 @@
+# Atchim theme: midnight — cool blue, soft mint, restrained accents
+ATCHIM_COLOR_FG="#cbd5e1"
+ATCHIM_COLOR_MUTED="#94a3b8"
+ATCHIM_COLOR_COMMAND="#7dd3fc"
+ATCHIM_COLOR_STRING="#a7f3d0"
+ATCHIM_COLOR_OPTION="#c4b5fd"
+ATCHIM_COLOR_OPERATOR="#f0abfc"
+ATCHIM_COLOR_PATH="#fcd34d"
+ATCHIM_FZF_COLOR_BASE="fg:#cbd5e1,bg:-1,hl:#7dd3fc,fg+:#f1f5f9,bg+:-1,hl+:#a7f3d0"
+ATCHIM_FZF_COLOR_UI="border:#334155,header:#94a3b8,info:#94a3b8,prompt:#7dd3fc,pointer:#a7f3d0,marker:#c4b5fd,spinner:#7dd3fc"

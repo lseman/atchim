@@ -1,6 +1,8 @@
 .vscode
 assh
-atchim
+/atchim
 atchim_server
 .atchim.db
 *.bak
+
+/build/

@@ -82,8 +82,8 @@ if [ "$shell" != "zsh" ]; then
 fi
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-atchim_bin="$repo_dir/atchim"
-atchim_server_bin="$repo_dir/atchim_server"
+atchim_bin="$repo_dir/build/atchim"
+atchim_server_bin="$repo_dir/build/atchim_server"
 atchim_daemon="${ATCHIM_DAEMON:-0}"
 
 if [ ! -x "$atchim_bin" ] || [ ! -x "$atchim_server_bin" ]; then
