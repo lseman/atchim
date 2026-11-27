@@ -1,13 +1,17 @@
 # Atchim
 
-Atchim is a simple command-line tool for logging and visualizing your command history. It allows you to save the commands you execute in your terminal to a SQLite database and provides a native terminal interface for searching and recalling it, built with [FTXUI](https://github.com/ArthurSonzogni/FTXUI).
+Atchim saves your shell history to SQLite and helps you find and reuse commands
+with a native terminal picker built with [FTXUI](https://github.com/ArthurSonzogni/FTXUI).
+It runs without a background service or fzf.
 
 ## Features
 
-- Log all executed commands to an SQLite database.
-- Search your entire history with a native picker, directory and host filters.
-- Visualize and review your command history easily.
-- SQLite-first logging with an optional daemon mode.
+- Search your entire history, filtered by directory or host.
+- Run a selection with Enter or put it on the prompt for editing with Tab.
+- Recall multiline commands, tabs, Unicode, and trailing newlines exactly.
+- Record the starting directory and exit status for local commands.
+- Import Atuin history and choose from six built-in themes.
+- Write directly to SQLite with no background service.
 
 ## Getting Started
 
@@ -16,7 +20,8 @@ Atchim is a simple command-line tool for logging and visualizing your command hi
 Before using Atchim, you'll need to have the following prerequisites installed on your system:
 
 - A C++23 compiler, CMake 3.20 or newer, SQLite development headers, and libuv development headers.
-- [SQLite](https://www.sqlite.org/) for the database.
+- zsh for shell integration; Python 3 to run the tests.
+- Network access for the first build to fetch CPM.cmake and FTXUI.
 - [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions) if
   you want inline history suggestions while typing.
 
@@ -45,27 +50,17 @@ Before using Atchim, you'll need to have the following prerequisites installed o
 
 The installer adds a managed Atchim block to `.zshrc`. That block logs commands
 with paired `preexec` and `precmd` hooks and binds the native history picker to Ctrl-R.
-Run `ATCHIM_DAEMON=1 ./install --shell zsh` if you want the optional daemon
-mode enabled in that managed block.
 
 ### Manual zsh Setup
 
 If you prefer to manage dotfiles yourself, add this to `.zshrc`:
 
    ```bash
-   export ATCHIM_BIN=/path/to/atchim
+   export ATCHIM_BIN=/path/to/atchim/build/atchim
    eval "$("$ATCHIM_BIN" init zsh)"
    ```
 
-#### Usage
-
-- By default, Atchim writes command history directly to SQLite.
-
-- Set `ATCHIM_DAEMON=1` to opt into the background daemon. In daemon mode,
-  Atchim starts `atchim_server`, sends log events over `ATCHIM_SOCKET`, and
-  falls back to direct SQLite if the daemon is unavailable.
-
-- History search, imports, and default logging read/write SQLite directly.
+### Everyday use
 
 - Use Ctrl-R to interactively search your command history.
 
@@ -75,10 +70,10 @@ If you prefer to manage dotfiles yourself, add this to `.zshrc`:
   as you type. Press Tab to accept a visible suggestion.
 
 - Set `ATCHIM_THEME` to change the Ctrl-R history colors. Built-in themes live
-  in `themes/`: `github-dark`, `github-light`, `catppuccin-mocha`, `dracula`,
-  and `nord`.
+  in `themes/`: `midnight`, `github-dark`, `github-light`, `catppuccin-mocha`,
+  `dracula`, and `nord`.
 
-- Use the assh wrapper if you want to log ssh commands to the database.
+- Use the `assh` wrapper to record commands typed in SSH sessions.
 
 ### Themes
 
@@ -121,8 +116,8 @@ atchim delete <id>               # delete a specific history entry by ID
 atchim clear                     # clear all history entries
 ```
 
-Set `ATCHIM_DB` to choose a different SQLite database path, or
-`ATCHIM_SOCKET` to choose a different Unix socket path in daemon mode.
+`start` and `log` record command text; they do not execute it.
+The default database is `~/.atchim.db`. Set `ATCHIM_DB` to use a different path.
 
 ### Recording controls and command context
 
@@ -148,17 +143,17 @@ atchim log --cwd "$PWD" --exit-status 0 -- 'make test'
 make test
 ```
 
-Calls carrying context write directly to SQLite, including when daemon mode is
-enabled. The legacy daemon still records command text and host. The SSH wrapper writes
-command text and host directly to SQLite without a daemon. Remote directory and
-exit status are unknown because the wrapper observes terminal input.
+All logging writes directly to SQLite. The SSH wrapper records command text and
+host; remote directory and exit status are unknown because it observes terminal input.
 Run `make test` for build and integration checks (requires Python 3 and zsh).
 
 ### History picker
 
 Ctrl-R opens a borderless picker in the lower part of the terminal. Each row shows
-compact elapsed time (`12s`, `2m`, `3h`, `5d`) on the left and a syntax-colored command. The selected row has a
-subtle background. The terminal's background and earlier shell output stay visible.
+compact elapsed time (`12s`, `2m`, `3h`, `5d`) on the left and a syntax-colored
+command. The selected row has a subtle background. The picker uses 65% of the
+terminal by default, leaving earlier shell output visible. When you select a
+command or cancel, it clears its display before returning to the shell.
 
 Typing searches command text and host across the entire database, showing the
 newest 200 matches. Narrowing the query can find commands of any age; there is no
@@ -234,9 +229,12 @@ uses true color in a terminal and plain text when piped or when `NO_COLOR` is se
 In a terminal, `atchim themes` opens a selector: arrow keys update the highlighted
 sample immediately, Enter saves, and Escape cancels without changing preferences.
 Use `atchim themes pick` to explicitly open it. The native selector previews
-the highlighted palette live; the saved palette applies when history next opens. When piped, `atchim themes` prints the theme list instead.
+the highlighted palette live; the saved palette applies when history next opens.
+When piped, `atchim themes` prints the theme list instead.
 
-Build outputs are `build/atchim`, `build/atchim_server`, and `build/assh`.
+### Build and test
+
+Build outputs are `build/atchim` and `build/assh`.
 The local installer configures zsh to use these binaries.
 
 Builds use C++23 and `-O2` by default. Override `CXX` and `CXXFLAGS` as needed.
@@ -246,4 +244,29 @@ FTXUI 7.0.3. Both downloads are pinned with SHA-256 checksums. The first build
 requires network access; subsequent builds reuse downloaded sources. Set
 `CPM_SOURCE_CACHE` to share dependencies between build directories, or use
 `CPM_ftxui_SOURCE` to supply a local FTXUI source checkout. CMake also works
-directly: `cmake -S . -B build/cmake && cmake --build build/cmake`.
+directly, keeping the binaries in the same location:
+
+```bash
+cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$PWD/build"
+cmake --build build/cmake
+```
+
+```bash
+make test
+```
+
+This runs logging, migration, shell integration, concurrent write, installer, and
+native picker checks. Picker checks use a pseudo-terminal.
+
+### Upgrade from the server-based version
+
+The optional history server has been removed. Older `ATCHIM_DAEMON`,
+`ATCHIM_SERVER_BIN`, and `ATCHIM_SOCKET` settings are ignored. Run
+`./install --shell zsh` again to replace the old managed shell block, then reload
+zsh. Existing SQLite history requires no changes.
+
+```zsh
+./install --shell zsh
+source ~/.zshrc
+```

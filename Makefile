@@ -1,6 +1,5 @@
 # Executable Names
 EXECUTABLE_atchim = build/atchim
-EXECUTABLE_atchim_server = build/atchim_server
 EXECUTABLE_assh = build/assh
 
 # Compiler
@@ -29,14 +28,12 @@ all:
 install: all
 	mkdir -p $(BINDIR) $(DATADIR)
 	install -m 755 $(EXECUTABLE_atchim) $(BINDIR)/
-	install -m 755 $(EXECUTABLE_atchim_server) $(BINDIR)/
 	install -m 755 $(EXECUTABLE_assh) $(BINDIR)/
 	install -d $(DATADIR)/themes
 	cp -r themes/* $(DATADIR)/themes/
 
 uninstall:
 	rm -f $(BINDIR)/$(notdir $(EXECUTABLE_atchim))
-	rm -f $(BINDIR)/$(notdir $(EXECUTABLE_atchim_server))
 	rm -f $(BINDIR)/$(notdir $(EXECUTABLE_assh))
 	rm -rf $(DATADIR)
 

@@ -101,7 +101,7 @@ def picker(arguments, env, **size):
 with tempfile.TemporaryDirectory() as tmp:
     database = str(Path(tmp) / 'history.db')
     env = {'ATCHIM_DB': database, 'XDG_CONFIG_HOME': tmp, 'ATCHIM_HEIGHT': '65%',
-           'ATCHIM_BIN': BINARY, 'ATCHIM_DAEMON': '0', 'ATCHIM_RECORD': '1',
+           'ATCHIM_BIN': BINARY, 'ATCHIM_RECORD': '1',
            'ATCHIM_IGNORE': '', 'ATCHIM_THEME': 'midnight'}
     subprocess.run([BINARY, 'log', '--', 'initialize'], env=os.environ | env, check=True)
     exact = "printf 'héllo\t世界'\necho done\n\n"

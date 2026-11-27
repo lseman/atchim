@@ -1,7 +1,7 @@
 import os,sqlite3,subprocess,tempfile,time,statistics,json,sys
 from pathlib import Path
 with tempfile.TemporaryDirectory() as tmp:
- db=tmp+'/history.db';env=dict(os.environ,ATCHIM_DB=db,ATCHIM_DAEMON='0',ATCHIM_RECORD='1',ATCHIM_IGNORE='')
+ db=tmp+'/history.db';env=dict(os.environ,ATCHIM_DB=db,ATCHIM_RECORD='1',ATCHIM_IGNORE='')
  candidate=str(Path('build/atchim').resolve()); baseline=sys.argv[1] if len(sys.argv)>1 else '/tmp/atchim-before-cpp23'
  subprocess.run([candidate,'log','--','seed'],env=env,check=True)
  with sqlite3.connect(db) as conn:

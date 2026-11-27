@@ -1,17 +1,12 @@
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <map>
 #include <cctype>
-#include <cerrno>
 #include <fnmatch.h>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -20,14 +15,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 #include "atchim/db.hpp"
 #include "atchim/picker.hpp"
 
 namespace {
-constexpr std::string_view DEFAULT_SOCKET_PATH = "/tmp/atchim_socket";
 constexpr size_t MAX_HISTORY_LIMIT = 50000;
 
 std::string getEnvOrDefault(const char *name, std::string_view fallback) {
@@ -111,8 +104,6 @@ void printZshInit() {
 autoload -Uz add-zsh-hook
 
 : ${ATCHIM_BIN:=atchim}
-: ${ATCHIM_SERVER_BIN:=atchim_server}
-: ${ATCHIM_DAEMON:=0}
 
 _zsh_autosuggest_strategy_atchim() {
     suggestion=$(command "$ATCHIM_BIN" suggest "$1" 2>/dev/null)
@@ -123,17 +114,6 @@ if [[ -n "${ZSH_AUTOSUGGEST_STRATEGY:-}" ]]; then
 else
     ZSH_AUTOSUGGEST_STRATEGY=("atchim")
 fi
-
-__atchim_start_server() {
-    [[ "$ATCHIM_DAEMON" == "1" || "$ATCHIM_DAEMON" == "true" || "$ATCHIM_DAEMON" == "yes" || "$ATCHIM_DAEMON" == "on" ]] || return 0
-
-    local socket_path="${ATCHIM_SOCKET:-/tmp/atchim_socket}"
-    if command -v pgrep >/dev/null 2>&1 && pgrep -f -- "$ATCHIM_SERVER_BIN" >/dev/null 2>&1; then
-        [[ -S "$socket_path" ]] && return 0
-    fi
-    [[ -S "$socket_path" ]] && command rm -f "$socket_path"
-    command "$ATCHIM_SERVER_BIN" >/dev/null 2>&1 || true
-}
 
 # Newline-separated shell glob patterns; leading spaces are ignored by default.
 __atchim_preexec() {
@@ -197,7 +177,6 @@ _atchim_tab_accept_or_complete() {
     fi
 }
 
-__atchim_start_server
 add-zsh-hook preexec __atchim_preexec
 add-zsh-hook precmd __atchim_precmd
 
@@ -221,107 +200,6 @@ fi
 )zsh";
 }
 } // namespace
-
-class UnixSocket {
-  public:
-    UnixSocket() : fd_(socket(AF_UNIX, SOCK_STREAM, 0)) {
-        if (fd_ == -1) {
-            throw std::system_error(errno, std::system_category(),
-                                    "Socket creation failed");
-        }
-    }
-
-    ~UnixSocket() {
-        if (fd_ != -1) {
-            close(fd_);
-        }
-    }
-
-    // Delete copy operations
-    UnixSocket(const UnixSocket &) = delete;
-    UnixSocket &operator=(const UnixSocket &) = delete;
-
-    // Move operations
-    UnixSocket(UnixSocket &&other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-
-    UnixSocket &operator=(UnixSocket &&other) noexcept {
-        if (this != &other) {
-            if (fd_ != -1) {
-                close(fd_);
-            }
-            fd_ = other.fd_;
-            other.fd_ = -1;
-        }
-        return *this;
-    }
-
-    [[nodiscard]] int get() const { return fd_; }
-
-  private:
-    int fd_;
-};
-
-class AtchimClient {
-  public:
-    explicit AtchimClient(std::string_view socketPath)
-        : socketPath_(socketPath) {
-        if (socketPath_.empty() ||
-            socketPath_.length() > sizeof(sockaddr_un::sun_path) - 1) {
-            throw std::invalid_argument("Invalid socket path");
-        }
-    }
-
-    void sendCommand(std::string_view command) const {
-        if (command.empty()) {
-            throw std::invalid_argument("Empty command");
-        }
-
-        UnixSocket sock;
-        connectToServer(sock);
-        sendAll(sock.get(), command);
-        sendAll(sock.get(), "\n");
-    }
-
-  private:
-    void connectToServer(const UnixSocket &sock) const {
-        sockaddr_un address{};
-        address.sun_family = AF_UNIX;
-
-        // Safer copy and null-termination
-        std::strncpy(address.sun_path, socketPath_.data(),
-                     sizeof(address.sun_path) - 1);
-        address.sun_path[sizeof(address.sun_path) - 1] = '\0';
-
-        socklen_t addrLen =
-            offsetof(sockaddr_un, sun_path) + std::strlen(address.sun_path) + 1;
-
-        if (connect(sock.get(), reinterpret_cast<sockaddr *>(&address),
-                    addrLen) == -1) {
-            throw std::system_error(errno, std::system_category(),
-                                    "Connection to server failed");
-        }
-    }
-
-    static void sendAll(int fd, std::string_view data) {
-        const char *buffer = data.data();
-        size_t remaining = data.length();
-
-        while (remaining > 0) {
-            ssize_t written = write(fd, buffer, remaining);
-            if (written == -1) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                throw std::system_error(errno, std::system_category(),
-                                        "Failed to send data");
-            }
-            remaining -= written;
-            buffer += written;
-        }
-    }
-
-    std::string socketPath_;
-};
 
 int parseLimit(int argc, char *argv[], int &index) {
     int limit = 50;
@@ -580,21 +458,7 @@ int logCommand(int argc, char *argv[], int start) {
         offset = end + 1;
     }
     const std::string resolvedHost = host.value_or("local");
-    const std::string message = host ? resolvedHost + "\t" + command : command;
-
-    if (cwd || exitStatus || !envFlagEnabled("ATCHIM_DAEMON")) {
-        insertHistoryEntry(command, resolvedHost, cwd, exitStatus);
-        return EXIT_SUCCESS;
-    }
-
-    try {
-        const AtchimClient client(
-            getEnvOrDefault("ATCHIM_SOCKET", DEFAULT_SOCKET_PATH));
-        client.sendCommand(message);
-    } catch (const std::system_error &) {
-        insertHistoryEntry(command, resolvedHost, cwd, exitStatus);
-    }
-
+    insertHistoryEntry(command, resolvedHost, cwd, exitStatus);
     return EXIT_SUCCESS;
 }
 

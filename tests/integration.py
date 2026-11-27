@@ -8,7 +8,7 @@ binary = str(Path('build/atchim').resolve())
 with tempfile.TemporaryDirectory() as tmp:
     database = str(Path(tmp) / 'history.db')
     env = dict(os.environ, ATCHIM_DB=database, ATCHIM_BIN=binary,
-               ATCHIM_DAEMON='0', ATCHIM_RECORD='1', ATCHIM_IGNORE='', ATCHIM_IGNORE_SPACE='1')
+               ATCHIM_RECORD='1', ATCHIM_IGNORE='', ATCHIM_IGNORE_SPACE='1')
     # Migrate an existing installation without losing history.
     with sqlite3.connect(database) as db:
         db.execute('CREATE TABLE HISTORY(ID INTEGER PRIMARY KEY, COMMAND TEXT, HOST TEXT, TIME TEXT)')
@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory() as tmp:
     def run(*args, **changes):
         return subprocess.run([binary, *args], env=env | changes, check=True, capture_output=True, text=True)
     command = "printf 'héllo\\tworld'\necho done"
-    run('log', '--cwd', '/tmp/example', '--exit-status', '7', '--', command, ATCHIM_DAEMON='1')
+    run('log', '--cwd', '/tmp/example', '--exit-status', '7', '--', command)
     details = run('show', '2').stdout
     assert command in details and '/tmp/example' in details and 'exit 7' in details
     run('log', '--', ' private')
@@ -81,7 +81,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print('Theme checks passed: discovery, previews, saved selection, invalid names.')
 
 with tempfile.TemporaryDirectory() as tmp:
-    env = dict(os.environ, ATCHIM_DB=tmp+'/db', ATCHIM_DAEMON='0', ATCHIM_RECORD='1', ATCHIM_IGNORE='')
+    env = dict(os.environ, ATCHIM_DB=tmp+'/db', ATCHIM_RECORD='1', ATCHIM_IGNORE='')
     for command in ('git status old', 'git status new', 'literal* star', 'literal? question', 'literal[ bracket', 'héllo world'):
         subprocess.run([binary, 'log', '--', command], env=env, check=True)
     for prefix, expected in [('git status', 'git status new'), ('literal*', 'literal* star'), ('literal?', 'literal? question'), ('literal[', 'literal[ bracket'), ('héllo', 'héllo world'), ('missing', '')]:
@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory() as tmp:
     ]):
         database = str(Path(tmp) / f'ssh-{index}.db')
         env = dict(os.environ, PATH=tmp+':'+os.environ['PATH'], ATCHIM_DB=database,
-                   ATCHIM_RECORD='1', ATCHIM_IGNORE='', ATCHIM_IGNORE_SPACE='1', ATCHIM_DAEMON='0') | controls
+                   ATCHIM_RECORD='1', ATCHIM_IGNORE='', ATCHIM_IGNORE_SPACE='1') | controls
         master, slave = pty.openpty()
         process = subprocess.Popen([str(Path('build/assh').resolve()), 'test-host'],
                                    stdin=slave, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
@@ -122,4 +122,49 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert db.execute('SELECT COMMAND, HOST, CWD, EXIT_STATUS FROM HISTORY').fetchall() == [(command, 'test-host', None, None)]
         else:
             assert not Path(database).exists()
-    print('SSH wrapper checks passed: direct SQLite writes and recording exclusions without a daemon.')
+    print('SSH wrapper checks passed: direct SQLite writes and recording exclusions without a server.')
+
+# Old daemon settings must never route a command away from SQLite, even when
+# a socket is listening at the formerly configured endpoint.
+import select
+import socket
+with tempfile.TemporaryDirectory() as tmp:
+    database = str(Path(tmp) / 'history.db')
+    endpoint = str(Path(tmp) / 'history.sock')
+    env = dict(os.environ, ATCHIM_DB=database, ATCHIM_RECORD='1',
+               ATCHIM_IGNORE='', ATCHIM_DAEMON='1', ATCHIM_SOCKET=endpoint)
+    commands = [('start', 'echo first\necho second', 'local'),
+                ('log', 'printf "with\ttab"', 'remote')]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(endpoint)
+        listener.listen()
+        for action, command, host in commands:
+            args = [binary, action]
+            if host != 'local':
+                args += ['--host', host]
+            subprocess.run([*args, '--', command], env=env, check=True, capture_output=True)
+        assert not select.select([listener], [], [], 0)[0], 'Logging contacted the old server'
+    with sqlite3.connect(database) as db:
+        assert db.execute('SELECT COMMAND, HOST FROM HISTORY ORDER BY ID').fetchall() == [
+            (command, host) for _, command, host in commands]
+    writers = [subprocess.Popen([binary, 'log', '--', f'parallel {i}'], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE) for i in range(12)]
+    for writer in writers:
+        _, stderr = writer.communicate(timeout=10)
+        assert writer.returncode == 0, stderr
+    with sqlite3.connect(database) as db:
+        assert db.execute('SELECT COUNT(*) FROM HISTORY').fetchone()[0] == 14
+    # Updating installation removes legacy settings from the managed block and
+    # preserves unrelated shell configuration.
+    rc = Path(tmp) / 'zshrc'
+    rc.write_text('export MY_SETTING=keep\n# >>> atchim >>>\nexport ATCHIM_DAEMON=1\n'
+                  'export ATCHIM_SERVER_BIN=old-server\n# <<< atchim <<<\n')
+    for _ in range(2):
+        subprocess.run(['./install', '--shell', 'zsh', '--rc-file', str(rc)],
+                       env=env, check=True, capture_output=True)
+    installed = rc.read_text()
+    assert 'export MY_SETTING=keep' in installed
+    assert installed.count('# >>> atchim >>>') == 1
+    assert 'ATCHIM_BIN=' in installed
+    assert 'ATCHIM_DAEMON' not in installed and 'ATCHIM_SERVER_BIN' not in installed
+    print('Direct logging checks passed: obsolete settings ignored, no socket traffic, exact commands, concurrent writers, installer upgrade.')

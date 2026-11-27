@@ -11,35 +11,11 @@ Usage:
   ./install --shell zsh [--rc-file PATH] [--dry-run]
 
 Installs Atchim shell integration into your shell startup file.
-Set ATCHIM_DAEMON=1 before running install to opt into the background daemon.
 EOF
 }
 
 quote_sh() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
-
-start_daemon_if_needed() {
-    case "${ATCHIM_DAEMON:-0}" in
-        1 | true | TRUE | yes | YES | on | ON) ;;
-        *) return ;;
-    esac
-
-    socket_path=${ATCHIM_SOCKET:-/tmp/atchim_socket}
-
-    if command -v pgrep >/dev/null 2>&1 &&
-        pgrep -f -- "$atchim_server_bin" >/dev/null 2>&1 &&
-        [ -S "$socket_path" ]; then
-        echo "Atchim daemon is already running."
-        return
-    fi
-
-    if [ -S "$socket_path" ]; then
-        rm -f "$socket_path"
-    fi
-
-    "$atchim_server_bin" >/dev/null 2>&1 || true
-    echo "Started Atchim daemon."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -83,10 +59,8 @@ fi
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 atchim_bin="$repo_dir/build/atchim"
-atchim_server_bin="$repo_dir/build/atchim_server"
-atchim_daemon="${ATCHIM_DAEMON:-0}"
 
-if [ ! -x "$atchim_bin" ] || [ ! -x "$atchim_server_bin" ]; then
+if [ ! -x "$atchim_bin" ]; then
     echo "Building Atchim..."
     make -C "$repo_dir"
 fi
@@ -101,8 +75,6 @@ block_end="# <<< atchim <<<"
 block=$(cat <<EOF
 $block_start
 export ATCHIM_BIN=$(quote_sh "$atchim_bin")
-export ATCHIM_SERVER_BIN=$(quote_sh "$atchim_server_bin")
-export ATCHIM_DAEMON=$(quote_sh "$atchim_daemon")
 eval "\$("\$ATCHIM_BIN" init zsh)"
 $block_end
 EOF
@@ -130,8 +102,6 @@ awk -v start="$block_start" -v end="$block_end" '
 } >"$rc_file"
 
 rm -f "$tmp_file"
-
-start_daemon_if_needed
 
 echo "Atchim zsh integration installed in $rc_file"
 echo "Restart your shell or run: source $(quote_sh "$rc_file")"

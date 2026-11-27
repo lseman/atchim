@@ -58,6 +58,15 @@ private:
     }
 };
 
+void runTransientPicker(ScreenInteractive &screen, Component component) {
+    screen.Loop(std::move(component));
+    // TerminalOutput leaves the last frame visible and the cursor one line
+    // below it. Erase that frame before returning the selection to the shell.
+    // ResetPosition clears only the rendered rows, preserving output above it.
+    if (screen.dimy() > 0)
+        std::cout << "\r\033[2K\033[1A" << screen.ResetPosition(true) << std::flush;
+}
+
 // Stored commands are untrusted terminal content. Preserve original bytes for
 // selection, but render control bytes visibly instead of interpreting them.
 std::string display(std::string_view value, bool multiline = false) {
@@ -399,7 +408,7 @@ std::optional<PickedCommand> pickHistory(const std::filesystem::path &database,
         if (event == Event::CtrlR) { submit(); return true; }
         return false;
     });
-    screen.Loop(component);
+    runTransientPicker(screen, component);
     return selection;
 }
 
@@ -442,7 +451,7 @@ std::optional<std::string> pickTheme(const std::vector<std::filesystem::path> &t
         if ((event == Event::ArrowDown || event == Event::Character('j')) && selected + 1 < themes.size()) ++selected;
         return false;
     });
-    screen.Loop(component);
+    runTransientPicker(screen, component);
     return selection;
 }
 }
